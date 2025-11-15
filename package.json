@@ -1,7 +1,7 @@
 {
 	"name": "data-migration",
 	"version": "1.0.0",
-	"license": "UNLICENSED",
+	"license": "GPL-3.0",
 	"main": "build/src/index.js",
 	"bin": "build/src/index.js",
 	"type": "commonjs",
