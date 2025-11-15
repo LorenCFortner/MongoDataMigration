@@ -1,0 +1,37 @@
+{
+	"name": "data-migration",
+	"version": "1.0.0",
+	"license": "UNLICENSED",
+	"main": "build/src/index.js",
+	"bin": "build/src/index.js",
+	"type": "commonjs",
+	"scripts": {
+		"clean:migrations": "pwsh -Command \"if (Test-Path 'build/migrations') { Remove-Item 'build/migrations' -Recurse -Force }\"",
+		"pregenerate:registry": "node scripts/CreateMigrationStub.js",
+		"generate:registry": "node --no-deprecation node_modules/ts-node/dist/bin.js scripts/GenerateRegistry/GenerateRegistry.ts",
+		"build:ts": "npm run clean:migrations && npm run generate:registry && tsc",
+		"build:exe": "npm run build:ts && nexe build/src/index.js -t windows-x64-14.15.3 -o ../../Output/SideCars/Command360.DataMigration.exe",
+		"prestart": "yarn generate:registry",
+		"start": "ts-node src/index.ts",
+		"pretest": "node scripts/CreateMigrationStub.js && npm run generate:registry",
+		"test": "jest",
+		"test:watch": "jest --watch",
+		"test:coverage": "jest --coverage",
+		"test:ci": "jest --ci --coverage --watchAll=false"
+	},
+	"dependencies": {
+		"mongodb": "^4.17.2",
+		"natural-orderby": "^5.0.0",
+		"reflect-metadata": "^0.2.2",
+		"tsyringe": "^4.10.0"
+	},
+	"devDependencies": {
+		"@types/jest": "^30.0.0",
+		"@types/node": "^22.0.0",
+		"jest": "^30.2.0",
+		"nexe": "5.0.0-beta.4",
+		"ts-jest": "^29.4.5",
+		"ts-node": "^10.9.2",
+		"typescript": "^5.6.0"
+	}
+}

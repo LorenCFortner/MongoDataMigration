@@ -1,0 +1,6 @@
+build/
+Logs/
+node_modules/
+Build/
+MigrationRegistryAuto.ts
+coverage/
