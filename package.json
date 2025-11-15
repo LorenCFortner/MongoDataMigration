@@ -10,7 +10,7 @@
 		"pregenerate:registry": "node scripts/CreateMigrationStub.js",
 		"generate:registry": "node --no-deprecation node_modules/ts-node/dist/bin.js scripts/GenerateRegistry/GenerateRegistry.ts",
 		"build:ts": "npm run clean:migrations && npm run generate:registry && tsc",
-		"build:exe": "npm run build:ts && nexe build/src/index.js -t windows-x64-14.15.3 -o ../../Output/SideCars/MongoDataMigration.exe",
+		"build:exe": "npm run build:ts && nexe build/src/index.js -t windows-x64-14.15.3 -o build/MongoDataMigration.exe",
 		"prestart": "yarn generate:registry",
 		"start": "ts-node src/index.ts",
 		"pretest": "node scripts/CreateMigrationStub.js && npm run generate:registry",
