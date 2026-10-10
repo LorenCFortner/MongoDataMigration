@@ -160,13 +160,15 @@ Build TypeScript to JavaScript:
 npm run build:ts
 ```
 
-Build standalone executable (Windows):
+Build standalone executable:
 
 ```bash
 npm run build:exe
 ```
 
-The executable will be created at `../../Output/SideCars/MongoDataMigration.exe`.
+The executable will be created at `build/MongoDataMigration.exe`.
+
+This uses Node's own [Single Executable Applications](https://nodejs.org/api/single-executable-applications.html) feature (`scripts/BuildExe.js`): it bundles `build/src/index.js` and its dependencies into one file with `esbuild`, then embeds that bundle into a copy of whichever `node` binary is running the build, using `postject`. The resulting `.exe` runs whatever Node version built it — there's no separately-downloaded runtime to go stale, so building with Node 22+ gives you a Node 22+ executable. Build on the newest Node version you intend to support.
 
 ### Running the Executable
 
