@@ -21,6 +21,10 @@ describe("Runner", () => {
 	let mockFindOne: jest.Mock;
 	let mockReplaceOne: jest.Mock;
 	let mockCollection: any;
+	let mockLockInsertOne: jest.Mock;
+	let mockLockDeleteOne: jest.Mock;
+	let mockLockFindOne: jest.Mock;
+	let mockLockCollection: any;
 	let mockDb: any;
 
 	const createMigrationRegistryMock = () => [
@@ -36,8 +40,18 @@ describe("Runner", () => {
 			findOne: mockFindOne,
 			replaceOne: mockReplaceOne,
 		};
+
+		mockLockInsertOne = jest.fn().mockResolvedValue(undefined);
+		mockLockDeleteOne = jest.fn().mockResolvedValue(undefined);
+		mockLockFindOne = jest.fn().mockResolvedValue(null);
+		mockLockCollection = {
+			insertOne: mockLockInsertOne,
+			deleteOne: mockLockDeleteOne,
+			findOne: mockLockFindOne,
+		};
+
 		mockDb = {
-			collection: jest.fn().mockReturnValue(mockCollection),
+			collection: jest.fn((name: string) => (name === "_migrations_lock" ? mockLockCollection : mockCollection)),
 		};
 		mongo.getMongoDatabase.mockResolvedValue(mockDb as any);
 	};
@@ -138,6 +152,81 @@ describe("Runner", () => {
 			await runner.execute();
 
 			expect(logger.log).toHaveBeenCalledWith("Last applied migration ID: 1");
+		});
+
+		describe("migration locking", () => {
+			it("acquires the lock before checking for pending migrations", async () => {
+				await runner.execute();
+
+				expect(mockDb.collection).toHaveBeenCalledWith("_migrations_lock");
+
+				expect(mockLockInsertOne).toHaveBeenCalledWith(expect.objectContaining({_id: "lock", pid: process.pid}));
+			});
+
+			it("sets lockCollection to the _migrations_lock collection", async () => {
+				const originalTeardown = (runner as any).teardownMongo;
+				const teardownSpy = jest.spyOn(runner as any, "teardownMongo").mockImplementation(async () => {
+					expect(runner.lockCollection).toBe(mockLockCollection);
+
+					await originalTeardown.call(runner);
+				});
+
+				try {
+					await runner.execute();
+				} finally {
+					teardownSpy.mockRestore();
+				}
+			});
+
+			it("releases the lock after a successful run", async () => {
+				await runner.execute();
+
+				expect(mockLockDeleteOne).toHaveBeenCalledWith({_id: "lock"});
+			});
+
+			it("releases the lock even if a migration fails", async () => {
+				mockLastMigrationId(0);
+
+				const mockMigrationRegistry = require("../../MigrationRegistryAuto");
+				mockMigrationRegistry.migrationRegistry = createMigrationRegistryMock();
+				mockMigrationRegistry.migrationRegistry[0].up.mockRejectedValue(new Error("boom"));
+
+				await expect(runner.execute()).rejects.toThrow("boom");
+
+				expect(mockLockDeleteOne).toHaveBeenCalledWith({_id: "lock"});
+			});
+
+			it("sets lockCollection to undefined after teardown", async () => {
+				await runner.execute();
+
+				expect(runner.lockCollection).toBeUndefined();
+			});
+
+			it("refuses to run migrations and does not release the lock when another run already holds it", async () => {
+				const duplicateKeyError = Object.assign(new Error("E11000 duplicate key error"), {code: 11000});
+				mockLockInsertOne.mockRejectedValue(duplicateKeyError);
+				mockLockFindOne.mockResolvedValue({_id: "lock", acquiredAt: new Date("2024-01-01T00:00:00.000Z"), pid: 4242});
+
+				await expect(runner.execute()).rejects.toThrow("Another migration run is already in progress");
+
+				expect(mockFindOne).not.toHaveBeenCalled();
+
+				for (const migration of createMigrationRegistryMock()) {
+					expect(migration.up).not.toHaveBeenCalled();
+				}
+
+				expect(mockLockDeleteOne).not.toHaveBeenCalled();
+
+				expect(mongo.closeMongoDatabase).toHaveBeenCalledTimes(1);
+			});
+
+			it("propagates non-lock errors from the lock insert unchanged", async () => {
+				mockLockInsertOne.mockRejectedValue(new Error("connection reset"));
+
+				await expect(runner.execute()).rejects.toThrow("connection reset");
+
+				expect(mockLockDeleteOne).not.toHaveBeenCalled();
+			});
 		});
 
 		describe("migrationRegistry based tests", () => {

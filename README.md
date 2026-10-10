@@ -11,6 +11,7 @@ MongoDataMigration runs TypeScript migration files in sequential order to evolve
 - **Sequential Execution**: Migrations run in order based on their numeric ID
 - **Run-once tracking**: Each migration runs only once; the system tracks the highest migration ID that has been applied
 - **Transactional on replica sets**: Where the MongoDB deployment supports it, each migration runs in a transaction and is automatically rolled back on failure, so a failed run can simply be re-run
+- **Single-run lock**: Only one instance can run migrations against a database at a time; a second instance fails fast instead of racing the first
 - **TypeScript Support**: Write migrations in TypeScript with full type safety
 - **Auto-Generated Registry**: Migration registry is automatically generated from the `migrations/` folder
 - **Logging**: Comprehensive logging to both console and file
@@ -179,11 +180,24 @@ After building, run the executable directly:
 
 1. **Registry Generation**: Before running, the system scans the `migrations/` folder and generates `MigrationRegistryAuto.ts`
 2. **Connection**: Connects to MongoDB using the configured connection string
-3. **Tracking**: Checks the `_migrations` collection to determine the last applied migration ID
-4. **Execution**: Runs all migrations with IDs greater than the last applied ID, in sequential order
+3. **Locking**: Acquires an exclusive lock in the `_migrations_lock` collection so only one instance of the tool can run migrations at a time (see [Concurrency: Single-Run Lock](#concurrency-single-run-lock) below)
+4. **Tracking**: Checks the `_migrations` collection to determine the last applied migration ID
+5. **Execution**: Runs all migrations with IDs greater than the last applied ID, in sequential order
    > ⚠️ **Only the highest applied ID is tracked** — not which individual migrations ran. If you add a new migration numbered *lower* than one that has already run against a database, it will be silently skipped there, forever, with no warning. New migrations must always get a number higher than the highest one that already exists. See [Migration Tracking](#migration-tracking) below.
-5. **Recording**: After each successful migration, updates the `_migrations` collection with the new migration ID
-6. **Cleanup**: Closes the database connection
+6. **Recording**: After each successful migration, updates the `_migrations` collection with the new migration ID
+7. **Cleanup**: Releases the lock and closes the database connection
+
+## Concurrency: Single-Run Lock
+
+Only one instance of the tool is allowed to run migrations against a given database at a time. This matters because two instances starting together — two installers, or an installer racing a manual run — would otherwise both read the same "last applied ID" and both try to apply the same migrations at once.
+
+Before checking for pending migrations, the tool inserts a document with a fixed `_id` of `"lock"` into the `_migrations_lock` collection. `_id` always has a unique index in MongoDB, so this insert is atomic: if two instances race to do it at the same moment, only one insert can succeed. The other instance's insert fails immediately with a duplicate-key error, and that instance **fails fast** with an error naming when the lock was acquired and by which process — it does not wait, retry, or run anything.
+
+The lock is released (the document is deleted) as soon as the run finishes, whether it succeeded or failed — a failed run still frees the lock so the next attempt isn't blocked by it.
+
+**Stale locks:** if a process holding the lock is killed outright (not a normal failure, but e.g. the process or machine is forcibly terminated), it never reaches its cleanup step and the lock document is left behind. A later run will then refuse to start with "Another migration run is already in progress," even though nothing is actually running. If you're sure no run is genuinely in progress, delete the document with `_id: "lock"` from the `_migrations_lock` collection and try again.
+
+## Transaction Safety & Idempotency
 
 ## Transaction Safety & Idempotency
 

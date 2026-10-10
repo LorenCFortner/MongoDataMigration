@@ -9,9 +9,17 @@ export interface MigrationDocument extends Document {
 	lastApplied: Date;
 }
 
+export interface LockDocument extends Document {
+	_id: "lock";
+	acquiredAt: Date;
+	pid: number;
+}
+
 export interface IRunner {
 	execute(): Promise<void>;
 }
+
+const LOCK_DUPLICATE_KEY_ERROR_CODE = 11000;
 
 @injectable()
 export class Runner implements IRunner {
@@ -21,9 +29,15 @@ export class Runner implements IRunner {
 
 	public appliedCollection: Collection<Document> | undefined;
 
+	public lockCollection: Collection<LockDocument> | undefined;
+
+	private lockAcquired = false;
+
 	async execute(): Promise<void> {
 		try {
 			await this.setupMongo();
+
+			await this.acquireLock();
 
 			await this.runMigrations();
 		} catch (error) {
@@ -31,6 +45,8 @@ export class Runner implements IRunner {
 
 			throw error;
 		} finally {
+			await this.releaseLock();
+
 			await this.teardownMongo();
 		}
 	}
@@ -42,7 +58,60 @@ export class Runner implements IRunner {
 
 		this.appliedCollection = this.mongoDb.collection("_migrations");
 
+		this.lockCollection = this.mongoDb.collection<LockDocument>("_migrations_lock");
+
 		this.logger.log("MongoDB connection established.");
+	}
+
+	private async acquireLock(): Promise<void> {
+		if (!this.lockCollection) {
+			throw new Error("MongoDB is not set up. Cannot acquire migration lock.");
+		}
+
+		this.logger.log("Acquiring migration lock...");
+
+		try {
+			// _id has an implicit unique index, so this insert is an atomic "acquire" even
+			// if two instances race to run it at the same moment — only one can succeed.
+			await this.lockCollection.insertOne({_id: "lock", acquiredAt: new Date(), pid: process.pid});
+
+			this.lockAcquired = true;
+
+			this.logger.log("Migration lock acquired.");
+		} catch (error) {
+			if (this.isDuplicateKeyError(error)) {
+				const existingLock = await this.lockCollection.findOne({_id: "lock"});
+
+				throw new Error(
+					"Another migration run is already in progress" +
+						(existingLock
+							? ` (lock acquired at ${existingLock.acquiredAt.toISOString()} by process ${existingLock.pid}).`
+							: ".") +
+						" If no other run is actually in progress — for example after a crash left the lock behind — " +
+						'delete the document with _id "lock" from the _migrations_lock collection and try again.'
+				);
+			}
+
+			throw error;
+		}
+	}
+
+	private async releaseLock(): Promise<void> {
+		if (!this.lockAcquired || !this.lockCollection) {
+			return;
+		}
+
+		this.logger.log("Releasing migration lock...");
+
+		await this.lockCollection.deleteOne({_id: "lock"});
+
+		this.lockAcquired = false;
+
+		this.logger.log("Migration lock released.");
+	}
+
+	private isDuplicateKeyError(error: unknown): boolean {
+		return typeof error === "object" && error !== null && (error as {code?: number}).code === LOCK_DUPLICATE_KEY_ERROR_CODE;
 	}
 
 	private async runMigrations(): Promise<void> {
@@ -129,6 +198,8 @@ export class Runner implements IRunner {
 		this.mongoDb = undefined;
 
 		this.appliedCollection = undefined;
+
+		this.lockCollection = undefined;
 
 		this.logger.log("MongoDB connection closed.");
 	}
