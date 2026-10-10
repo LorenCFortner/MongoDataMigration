@@ -47,6 +47,44 @@ export function extractMigrationId(fileName: string): number {
 	return parseInt(match[1], 10);
 }
 
+export function findDuplicateMigrationIds(files: string[]): Map<number, string[]> {
+	const filesByMigrationId = new Map<number, string[]>();
+
+	for (const file of files) {
+		const migrationId = extractMigrationId(file);
+
+		const filesForId = filesByMigrationId.get(migrationId) ?? [];
+
+		filesForId.push(file);
+
+		filesByMigrationId.set(migrationId, filesForId);
+	}
+
+	const duplicates = new Map<number, string[]>();
+
+	for (const [migrationId, filesForId] of filesByMigrationId) {
+		if (filesForId.length > 1) {
+			duplicates.set(migrationId, filesForId);
+		}
+	}
+
+	return duplicates;
+}
+
+export function assertNoDuplicateMigrationIds(files: string[]): void {
+	const duplicates = findDuplicateMigrationIds(files);
+
+	if (duplicates.size === 0) {
+		return;
+	}
+
+	const details = Array.from(duplicates.entries())
+		.map(([migrationId, filesForId]) => `  ID ${migrationId}: ${filesForId.join(", ")}`)
+		.join("\n");
+
+	throw new Error(`Duplicate migration IDs found. Each migration file must have a unique numeric ID:\n${details}`);
+}
+
 async function verifyMigrationImplementsInterface(
 	migrationPath: string,
 	fileName: string,
@@ -160,6 +198,18 @@ export async function generateRegistry(
 
 	if (files.length === 0) {
 		logger.log("No migration files found.");
+
+		return;
+	}
+
+	try {
+		assertNoDuplicateMigrationIds(files);
+	} catch (error) {
+		logger.error("Migration generation failed!");
+
+		logger.error(error instanceof Error ? error.message : String(error));
+
+		process.exit(1);
 
 		return;
 	}

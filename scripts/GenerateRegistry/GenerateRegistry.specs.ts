@@ -11,7 +11,14 @@ jest.doMock("../../src/Logger/Logger", () => ({
 	ILogger: undefined,
 }));
 
-import {extractMigrationId, generateRegistryContent, generateRegistry, verifyAllMigrations} from "./GenerateRegistry";
+import {
+	extractMigrationId,
+	findDuplicateMigrationIds,
+	assertNoDuplicateMigrationIds,
+	generateRegistryContent,
+	generateRegistry,
+	verifyAllMigrations,
+} from "./GenerateRegistry";
 import {IFileSystem} from "../../src/FileSystem/FileSystem";
 import {container} from "tsyringe";
 import path from "path";
@@ -52,6 +59,70 @@ describe("GenerateRegistry", () => {
 			expect(() => extractMigrationId("abc-addTestData.ts")).toThrow(
 				'Invalid migration filename format: abc-addTestData.ts. Expected format: "number-description.ts"'
 			);
+		});
+	});
+
+	describe("findDuplicateMigrationIds", () => {
+		it("should return an empty map when all IDs are unique", () => {
+			const result = findDuplicateMigrationIds(["0001-addTestData.ts", "0002-addDataToTheTestData.ts", "0013-addActiveFlag.ts"]);
+
+			expect(result.size).toBe(0);
+		});
+
+		it("should return an empty map for an empty file list", () => {
+			const result = findDuplicateMigrationIds([]);
+
+			expect(result.size).toBe(0);
+		});
+
+		it("should find two files sharing the same numeric ID regardless of padding", () => {
+			const result = findDuplicateMigrationIds(["0002-a.ts", "2-b.ts"]);
+
+			expect(result.size).toBe(1);
+
+			expect(result.get(2)).toEqual(["0002-a.ts", "2-b.ts"]);
+		});
+
+		it("should find multiple separate duplicate groups", () => {
+			const result = findDuplicateMigrationIds(["0001-a.ts", "0001-b.ts", "0002-c.ts", "0003-d.ts", "0003-e.ts"]);
+
+			expect(result.size).toBe(2);
+
+			expect(result.get(1)).toEqual(["0001-a.ts", "0001-b.ts"]);
+
+			expect(result.get(3)).toEqual(["0003-d.ts", "0003-e.ts"]);
+		});
+
+		it("should not flag three or more files with the same ID as separate pairs", () => {
+			const result = findDuplicateMigrationIds(["0001-a.ts", "0001-b.ts", "0001-c.ts"]);
+
+			expect(result.size).toBe(1);
+
+			expect(result.get(1)).toEqual(["0001-a.ts", "0001-b.ts", "0001-c.ts"]);
+		});
+	});
+
+	describe("assertNoDuplicateMigrationIds", () => {
+		it("should not throw when all IDs are unique", () => {
+			expect(() => assertNoDuplicateMigrationIds(["0001-a.ts", "0002-b.ts"])).not.toThrow();
+		});
+
+		it("should throw naming the duplicated ID and both files", () => {
+			expect(() => assertNoDuplicateMigrationIds(["0002-a.ts", "2-b.ts"])).toThrow(/ID 2: 0002-a\.ts, 2-b\.ts/);
+		});
+
+		it("should throw listing every duplicate group when more than one exists", () => {
+			let thrownMessage = "";
+
+			try {
+				assertNoDuplicateMigrationIds(["0001-a.ts", "0001-b.ts", "0003-c.ts", "0003-d.ts"]);
+			} catch (error) {
+				thrownMessage = error instanceof Error ? error.message : String(error);
+			}
+
+			expect(thrownMessage).toContain("ID 1: 0001-a.ts, 0001-b.ts");
+
+			expect(thrownMessage).toContain("ID 3: 0003-c.ts, 0003-d.ts");
 		});
 	});
 
@@ -453,6 +524,30 @@ describe("GenerateRegistry", () => {
 			expect(mockFileSystem.writeFileSync).toHaveBeenCalled();
 
 			expect(mockVerifyFunction).toHaveBeenCalled();
+		});
+
+		it("should fail with duplicate migration IDs and never reach verification or write", async () => {
+			const mockProcessExit = jest.spyOn(process, "exit").mockImplementation(() => {
+				throw new Error("process.exit called");
+			});
+
+			const mockImportFunction = jest.fn();
+
+			(mockFileSystem.readdirSync as jest.Mock).mockReturnValue(["0002-a.ts", "2-b.ts"]);
+
+			await expect(generateRegistry("/test/migrations", "/test/output.ts", mockFileSystem, mockVerifyFunction, mockImportFunction)).rejects.toThrow(
+				"process.exit called"
+			);
+
+			expect(mockLogger.error).toHaveBeenCalledWith("Migration generation failed!");
+
+			expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining("ID 2: 0002-a.ts, 2-b.ts"));
+
+			expect(mockProcessExit).toHaveBeenCalledWith(1);
+
+			expect(mockVerifyFunction).not.toHaveBeenCalled();
+
+			expect(mockFileSystem.writeFileSync).not.toHaveBeenCalled();
 		});
 
 		it("should handle verification errors properly", async () => {
