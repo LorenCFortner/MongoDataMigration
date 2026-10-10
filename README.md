@@ -170,6 +170,7 @@ After building, run the executable directly:
 2. **Connection**: Connects to MongoDB using the configured connection string
 3. **Tracking**: Checks the `_migrations` collection to determine the last applied migration ID
 4. **Execution**: Runs all migrations with IDs greater than the last applied ID, in sequential order
+   > ⚠️ **Only the highest applied ID is tracked** — not which individual migrations ran. If you add a new migration numbered *lower* than one that has already run against a database, it will be silently skipped there, forever, with no warning. New migrations must always get a number higher than the highest one that already exists. See [Migration Tracking](#migration-tracking) below.
 5. **Recording**: After each successful migration, updates the `_migrations` collection with the new migration ID
 6. **Cleanup**: Closes the database connection
 
@@ -182,6 +183,12 @@ The system tracks applied migrations in a special `_migrations` collection in yo
 	lastMigrationId: 13; // The ID of the most recently applied migration
 }
 ```
+
+This is intentionally a **single number, not a list**. The tool only ever asks "what's the highest ID applied so far?" and runs every migration numbered above it.
+
+**This means numbering is a one-way ratchet.** Once a database has applied migration `0013`, it will never run anything numbered `0013` or lower again — including a migration file that gets added *afterward* but happens to be numbered lower (e.g. `0005-something.ts`). That file will not run, will not be skipped with a warning, and will not show up in any log or error. It will simply never execute on that database.
+
+**Rule:** always give a new migration a number higher than the highest-numbered file currently in `migrations/`. Do not reuse a low number "to fill a gap" after higher-numbered migrations already exist — see Best Practices below.
 
 ## Scripts
 
@@ -202,7 +209,7 @@ Logs are written to the `logs/` directory with timestamped filenames. Each sessi
 2. **Use descriptive names** - Make migration filenames clear about what they do
 3. **Keep migrations focused** - Each migration should handle one logical change
 4. **Test migrations** - Test on a copy of production data before deploying
-5. **Sequential numbering** - Leave gaps in numbering (e.g., 0001, 0010, 0020) to allow for insertions if needed
+5. **Always number upward** - A new migration's number must be higher than every number currently in `migrations/`. Never reuse a skipped or "gap" number once a higher-numbered migration exists, and never insert a lower number after the fact — only the highest applied ID is tracked, so a lower-numbered migration added later will be silently skipped on any database that already ran past it (see [Migration Tracking](#migration-tracking))
 6. **Idempotent operations** - Where possible, write migrations that can safely run multiple times
 
 ## License
