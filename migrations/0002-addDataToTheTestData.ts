@@ -1,13 +1,13 @@
-import {Db} from "mongodb";
+import {ClientSession, Db} from "mongodb";
 import {IMigrationScript} from "../src/Types/Migration";
 
-export const up: IMigrationScript["up"] = async (db: Db): Promise<void> => {
+export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession): Promise<void> => {
 	console.log("Adding data to CoolStuff...");
 
 	const collection = db.collection("CoolStuff");
 
 	// Get all documents in the collection
-	const documents = await collection.find({}).toArray();
+	const documents = await collection.find({}, {session}).toArray();
 
 	console.log(`Found ${documents.length} documents to process`);
 
@@ -22,7 +22,7 @@ export const up: IMigrationScript["up"] = async (db: Db): Promise<void> => {
 				console.log(`Processing ${doc.name}, extracted number: ${numberFromName}`);
 
 				// Update the document to add the data field
-				await collection.updateOne({_id: doc._id}, {$set: {data: numberFromName}});
+				await collection.updateOne({_id: doc._id}, {$set: {data: numberFromName}}, {session});
 			} else {
 				console.log(`No number found at end of name: ${doc.name}`);
 			}

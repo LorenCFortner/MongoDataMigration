@@ -9,7 +9,8 @@ MongoDataMigration runs TypeScript migration files in sequential order to evolve
 ## Features
 
 - **Sequential Execution**: Migrations run in order based on their numeric ID
-- **Idempotent**: Each migration runs only once; the system tracks which migrations have been applied
+- **Run-once tracking**: Each migration runs only once; the system tracks the highest migration ID that has been applied
+- **Transactional on replica sets**: Where the MongoDB deployment supports it, each migration runs in a transaction and is automatically rolled back on failure, so a failed run can simply be re-run
 - **TypeScript Support**: Write migrations in TypeScript with full type safety
 - **Auto-Generated Registry**: Migration registry is automatically generated from the `migrations/` folder
 - **Logging**: Comprehensive logging to both console and file
@@ -47,56 +48,66 @@ Where `XXXX` is a zero-padded numeric ID (e.g., `0001`, `0002`, `0013`).
 
 ### Migration Template
 
-Each migration must export an `up` function that implements the `IMigrationScript` interface:
+Each migration must export an `up` function that implements the `IMigrationScript` interface. `up` receives the database and, when one is available, a MongoDB `session` — **always pass `{session}` into every driver call you make**, even though `session` may be `undefined`:
 
 ```typescript
-import {Db} from "mongodb";
+import {ClientSession, Db} from "mongodb";
 import {IMigrationScript} from "../src/Types/Migration";
 
-export const up: IMigrationScript["up"] = async (db: Db): Promise<void> => {
+export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession): Promise<void> => {
 	const collection = db.collection("YourCollection");
 
-	// Your migration logic here
-	await collection.updateMany({}, {$set: {newField: "defaultValue"}});
+	// Your migration logic here — note the {session} passed to the driver call
+	await collection.updateMany({}, {$set: {newField: "defaultValue"}}, {session});
 };
 ```
 
+Passing `{session}` costs nothing when there is no transaction (the driver just ignores `session: undefined`), but it's what lets the migration participate in a transaction when one exists. See [Transaction Safety & Idempotency](#transaction-safety--idempotency) below for why this matters.
+
 ### Migration Examples
 
-**Example 1: Adding documents**
+**Example 1: Adding documents (idempotent via upsert)**
 
 ```typescript
-export const up: IMigrationScript["up"] = async (db: Db): Promise<void> => {
+export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession): Promise<void> => {
 	const collection = db.collection("Users");
 
-	await collection.insertMany([
+	const users = [
 		{name: "John Doe", email: "john@example.com"},
 		{name: "Jane Smith", email: "jane@example.com"},
-	]);
+	];
+
+	// Upsert on a unique key instead of insertMany, so running this twice never creates duplicates.
+	await collection.bulkWrite(
+		users.map(user => ({
+			updateOne: {filter: {email: user.email}, update: {$set: user}, upsert: true},
+		})),
+		{session}
+	);
 };
 ```
 
 **Example 2: Updating schema**
 
 ```typescript
-export const up: IMigrationScript["up"] = async (db: Db): Promise<void> => {
+export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession): Promise<void> => {
 	const collection = db.collection("Products");
 
 	// Add new field to all documents
-	await collection.updateMany({isActive: {$exists: false}}, {$set: {isActive: true}});
+	await collection.updateMany({isActive: {$exists: false}}, {$set: {isActive: true}}, {session});
 };
 ```
 
 **Example 3: Data transformation**
 
 ```typescript
-export const up: IMigrationScript["up"] = async (db: Db): Promise<void> => {
+export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession): Promise<void> => {
 	const collection = db.collection("Orders");
-	const documents = await collection.find({}).toArray();
+	const documents = await collection.find({}, {session}).toArray();
 
 	for (const doc of documents) {
 		// Transform data
-		await collection.updateOne({_id: doc._id}, {$set: {processedData: transformData(doc)}});
+		await collection.updateOne({_id: doc._id}, {$set: {processedData: transformData(doc)}}, {session});
 	}
 };
 ```
@@ -174,6 +185,22 @@ After building, run the executable directly:
 5. **Recording**: After each successful migration, updates the `_migrations` collection with the new migration ID
 6. **Cleanup**: Closes the database connection
 
+## Transaction Safety & Idempotency
+
+Before running any migrations, the tool checks whether the MongoDB connection supports transactions — that is, whether it's talking to a **replica set** or a **sharded cluster (mongos)**, including **MongoDB Atlas**, which is always a replica set. A standalone `mongod` does not support transactions at all.
+
+**If transactions are supported:** each migration's `up()` runs inside a MongoDB session transaction, along with the write that records it as applied. If the migration throws partway through — a network blip, a bad document, anything — the entire transaction is rolled back automatically. Nothing it wrote is kept, the "applied" record is never created, and the database is left exactly as it was before the migration started. You can simply fix the problem and run the tool again.
+
+For this to actually work, **every database call inside your migration must be passed the `session` argument** (see the [Migration Template](#migration-template) above). A write made without `{session}` happens outside the transaction and will **not** be rolled back — so leaving `session` off even one call silently defeats this safety net for that call.
+
+**If transactions are not supported** (a standalone server), the tool logs a warning and runs migrations without rollback. In that case, a migration that fails partway leaves whatever it already wrote in place, and re-running the tool will execute that migration's `up()` from the beginning again. This makes idempotency a **hard requirement**, not a nice-to-have, for any environment that might run against a standalone server:
+
+- Prefer `updateMany`/`updateOne` with `$set` — setting the same value twice has no extra effect.
+- Avoid `insertMany`/`insertOne` for fixed data; use `bulkWrite` with `updateOne` + `upsert: true` on a unique key instead (see Example 1 above), so re-running never creates duplicates.
+- If you must insert, either rely on a unique index to reject the duplicate (and treat the resulting duplicate-key error as a no-op), or check for existing documents first.
+
+**Bottom line:** write every migration as if it might run on a standalone server and might be re-run after a partial failure. Transactions give you automatic protection where they're available, but idempotency is what keeps you safe everywhere else — and it's free insurance even where transactions do work.
+
 ## Migration Tracking
 
 The system tracks applied migrations in a special `_migrations` collection in your database. This collection stores:
@@ -210,7 +237,8 @@ Logs are written to the `logs/` directory with timestamped filenames. Each sessi
 3. **Keep migrations focused** - Each migration should handle one logical change
 4. **Test migrations** - Test on a copy of production data before deploying
 5. **Always number upward** - A new migration's number must be higher than every number currently in `migrations/`. Never reuse a skipped or "gap" number once a higher-numbered migration exists, and never insert a lower number after the fact — only the highest applied ID is tracked, so a lower-numbered migration added later will be silently skipped on any database that already ran past it (see [Migration Tracking](#migration-tracking))
-6. **Idempotent operations** - Where possible, write migrations that can safely run multiple times
+6. **Idempotent operations** - Write every migration so it's safe to run more than once (e.g. `updateMany`/upsert instead of `insertMany`). On a replica set, a failed migration is rolled back automatically; on a standalone server it isn't, so idempotency is what keeps a re-run safe. See [Transaction Safety & Idempotency](#transaction-safety--idempotency)
+7. **Always pass `{session}`** - Every database call inside `up()` must include the `session` argument it receives, or that call won't be covered by the automatic rollback described above
 
 ## License
 

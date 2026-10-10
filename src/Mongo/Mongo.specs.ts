@@ -6,6 +6,9 @@ import {Mongo} from "./Mongo";
 let mockConnect: jest.Mock;
 let mockClose: jest.Mock;
 let mockDb: jest.Mock;
+let mockStartSession: jest.Mock;
+let mockAdminCommand: jest.Mock;
+let mockAdminDb: jest.Mock;
 
 jest.mock("mongodb", () => ({
 	MongoClient: jest.fn(),
@@ -18,7 +21,11 @@ describe("Mongo", () => {
 	beforeEach(() => {
 		mockConnect = jest.fn();
 		mockClose = jest.fn();
-		mockDb = jest.fn();
+		mockStartSession = jest.fn();
+		mockAdminCommand = jest.fn().mockResolvedValue({setName: "rs0"});
+		mockAdminDb = jest.fn().mockReturnValue({command: mockAdminCommand});
+
+		mockDb = jest.fn().mockImplementation((name: string) => (name === "admin" ? mockAdminDb() : {}));
 
 		container.reset();
 
@@ -28,6 +35,7 @@ describe("Mongo", () => {
 					connect: mockConnect,
 					close: mockClose,
 					db: mockDb,
+					startSession: mockStartSession,
 				} as any)
 		);
 
@@ -79,6 +87,62 @@ describe("Mongo", () => {
 			await mongo.closeMongoDatabase();
 
 			expect(mockClose).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("startSession should", () => {
+		it("throw if called before getMongoDatabase", () => {
+			expect(() => mongo.startSession()).toThrow("MongoDB client is not connected");
+		});
+
+		it("delegate to the underlying client", async () => {
+			const fakeSession = {};
+			mockStartSession.mockReturnValue(fakeSession);
+
+			await mongo.getMongoDatabase();
+
+			expect(mongo.startSession()).toBe(fakeSession);
+			expect(mockStartSession).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("supportsTransactions should", () => {
+		it("throw if called before getMongoDatabase", async () => {
+			await expect(mongo.supportsTransactions()).rejects.toThrow("MongoDB client is not connected");
+		});
+
+		it("return true when connected to a replica set", async () => {
+			mockAdminCommand.mockResolvedValue({setName: "rs0"});
+
+			await mongo.getMongoDatabase();
+
+			expect(await mongo.supportsTransactions()).toBe(true);
+		});
+
+		it("return true when connected to a mongos router", async () => {
+			mockAdminCommand.mockResolvedValue({msg: "isdbgrid"});
+
+			await mongo.getMongoDatabase();
+
+			expect(await mongo.supportsTransactions()).toBe(true);
+		});
+
+		it("return false when connected to a standalone server", async () => {
+			mockAdminCommand.mockResolvedValue({});
+
+			await mongo.getMongoDatabase();
+
+			expect(await mongo.supportsTransactions()).toBe(false);
+		});
+
+		it("fall back to isMaster when hello is not supported", async () => {
+			mockAdminCommand.mockRejectedValueOnce(new Error("no such command: 'hello'")).mockResolvedValueOnce({setName: "rs0"});
+
+			await mongo.getMongoDatabase();
+
+			expect(await mongo.supportsTransactions()).toBe(true);
+			expect(mockAdminCommand).toHaveBeenNthCalledWith(1, {hello: 1});
+			expect(mockAdminCommand).toHaveBeenNthCalledWith(2, {isMaster: 1});
 		});
 	});
 });

@@ -1,6 +1,6 @@
 import {injectable, inject} from "tsyringe";
 import {ILogger} from "../Logger/Logger";
-import {migrationRegistry, migrationCount} from "../../MigrationRegistryAuto";
+import {migrationRegistry, migrationCount, Migration} from "../../MigrationRegistryAuto";
 import {IMongo} from "../Mongo/Mongo";
 import {Collection, Db, Document} from "mongodb";
 
@@ -62,20 +62,62 @@ export class Runner implements IRunner {
 			return;
 		}
 
+		const transactionsSupported = await this.mongo.supportsTransactions();
+
+		if (!transactionsSupported) {
+			this.logger.warn(
+				"MongoDB transactions are not available on this connection (it is not a replica set or mongos). " +
+					"Migrations will run without automatic rollback on failure, so every migration must be safe to run " +
+					"more than once. See the README section on transaction safety and idempotency."
+			);
+		}
+
 		for (const migration of pendingMigrations) {
 			this.logger.log(`Running migration ${migration.id}: ${migration.name}`);
 
-			try {
-				await migration.up(this.mongoDb);
-
-				await this.appliedCollection.replaceOne({}, {migrationId: migration.id, lastApplied: new Date()}, {upsert: true});
-
-				this.logger.log(`Completed migration ${migration.id}: ${migration.name}`);
-			} catch (error) {
-				this.logger.error(`Failed migration ${migration.id}: ${migration.name}`, error);
-
-				throw error;
+			if (transactionsSupported) {
+				await this.runMigrationInTransaction(migration);
+			} else {
+				await this.runMigrationWithoutTransaction(migration);
 			}
+		}
+	}
+
+	private async runMigrationInTransaction(migration: Migration): Promise<void> {
+		const session = this.mongo.startSession();
+
+		try {
+			await session.withTransaction(async () => {
+				await migration.up(this.mongoDb!, session);
+
+				await this.appliedCollection!.replaceOne(
+					{},
+					{migrationId: migration.id, lastApplied: new Date()},
+					{upsert: true, session}
+				);
+			});
+
+			this.logger.log(`Completed migration ${migration.id}: ${migration.name}`);
+		} catch (error) {
+			this.logger.error(`Failed migration ${migration.id}: ${migration.name} — transaction rolled back, database left unchanged.`, error);
+
+			throw error;
+		} finally {
+			await session.endSession();
+		}
+	}
+
+	private async runMigrationWithoutTransaction(migration: Migration): Promise<void> {
+		try {
+			await migration.up(this.mongoDb!);
+
+			await this.appliedCollection!.replaceOne({}, {migrationId: migration.id, lastApplied: new Date()}, {upsert: true});
+
+			this.logger.log(`Completed migration ${migration.id}: ${migration.name}`);
+		} catch (error) {
+			this.logger.error(`Failed migration ${migration.id}: ${migration.name}`, error);
+
+			throw error;
 		}
 	}
 

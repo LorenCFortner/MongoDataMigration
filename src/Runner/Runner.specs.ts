@@ -60,6 +60,8 @@ describe("Runner", () => {
 			uri: "mongodb://localhost:27017",
 			getMongoDatabase: jest.fn(),
 			closeMongoDatabase: jest.fn().mockResolvedValue(undefined),
+			supportsTransactions: jest.fn().mockResolvedValue(false),
+			startSession: jest.fn(),
 		} as jest.Mocked<IMongo>;
 
 		container.reset();
@@ -210,6 +212,87 @@ describe("Runner", () => {
 				expect(mockMigrationRegistry.migrationRegistry[1].up).not.toHaveBeenCalled();
 
 				expect(mockMigrationRegistry.migrationRegistry[2].up).not.toHaveBeenCalled();
+			});
+
+			it("logs a warning when transactions are not supported", async () => {
+				mockLastMigrationId(0);
+
+				await runner.execute();
+
+				expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("transactions are not available"));
+			});
+		});
+
+		describe("when MongoDB supports transactions", () => {
+			let mockSession: any;
+
+			beforeEach(() => {
+				mongo.supportsTransactions.mockResolvedValue(true);
+
+				mockSession = {
+					withTransaction: jest.fn(async (fn: () => Promise<void>) => {
+						await fn();
+					}),
+					endSession: jest.fn().mockResolvedValue(undefined),
+				};
+
+				mongo.startSession.mockReturnValue(mockSession);
+			});
+
+			it("does not log the no-transaction warning", async () => {
+				mockLastMigrationId(0);
+
+				await runner.execute();
+
+				expect(logger.warn).not.toHaveBeenCalled();
+			});
+
+			it("runs each migration's up() inside a transaction, passing the session", async () => {
+				mockLastMigrationId(0);
+
+				const mockMigrationRegistry = require("../../MigrationRegistryAuto");
+
+				await runner.execute();
+
+				for (const migration of mockMigrationRegistry.migrationRegistry) {
+					expect(migration.up).toHaveBeenCalledWith(mockDb, mockSession);
+				}
+
+				expect(mockSession.withTransaction).toHaveBeenCalledTimes(mockMigrationRegistry.migrationRegistry.length);
+				expect(mockSession.endSession).toHaveBeenCalledTimes(mockMigrationRegistry.migrationRegistry.length);
+			});
+
+			it("records the applied migration inside the same transaction", async () => {
+				mockLastMigrationId(0);
+
+				const mockMigrationRegistry = require("../../MigrationRegistryAuto");
+
+				await runner.execute();
+
+				for (const migration of mockMigrationRegistry.migrationRegistry) {
+					expect(mockReplaceOne).toHaveBeenCalledWith(
+						{},
+						{migrationId: migration.id, lastApplied: expect.any(Date)},
+						{upsert: true, session: mockSession}
+					);
+				}
+			});
+
+			it("rolls back and does not record the migration as applied if it throws", async () => {
+				mockLastMigrationId(0);
+
+				const mockMigrationRegistry = require("../../MigrationRegistryAuto");
+
+				const error = new Error("boom");
+				mockMigrationRegistry.migrationRegistry[0].up.mockRejectedValue(error);
+
+				await expect(runner.execute()).rejects.toThrow("boom");
+
+				expect(mockReplaceOne).not.toHaveBeenCalled();
+
+				expect(mockMigrationRegistry.migrationRegistry[1].up).not.toHaveBeenCalled();
+
+				expect(mockSession.endSession).toHaveBeenCalledTimes(1);
 			});
 		});
 
