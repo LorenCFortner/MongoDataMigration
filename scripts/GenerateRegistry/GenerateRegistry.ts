@@ -15,27 +15,11 @@ const fileSystem = container.resolve<IFileSystem>("IFileSystem");
 
 logger.startSession("GenerateRegistry");
 
-function validateMigrationObject(obj: any, fileName: string): obj is IMigrationScript {
-	try {
-		const typedMigration: IMigrationScript = obj;
-
-		return true;
-	} catch (error) {
-		return false;
-	}
-}
-
-function createMigrationTemplate(): IMigrationScript {
-	return {
-		up: async () => {},
-	};
-}
-
-function getInterfaceRequirements(): (keyof IMigrationScript)[] {
-	const template = createMigrationTemplate();
-
-	return Object.keys(template) as (keyof IMigrationScript)[];
-}
+// IMigrationScript currently has a single required member. This is the actual list the
+// generator checks against — there's no way to derive "what properties does an interface
+// require" from TypeScript at runtime, so this has to be kept in sync by hand if
+// IMigrationScript ever grows a second required property.
+const REQUIRED_MIGRATION_PROPERTIES: (keyof IMigrationScript)[] = ["up"];
 
 export function extractMigrationId(fileName: string): number {
 	const match = fileName.match(/^(\d+)-/);
@@ -93,11 +77,7 @@ async function verifyMigrationImplementsInterface(
 	try {
 		const migrationModule = await importFunction(migrationPath);
 
-		const interfaceRequirements = getInterfaceRequirements();
-
-		const migrationObject: Partial<IMigrationScript> = {};
-
-		for (const propertyName of interfaceRequirements) {
+		for (const propertyName of REQUIRED_MIGRATION_PROPERTIES) {
 			if (!migrationModule[propertyName]) {
 				throw new Error(`Migration ${fileName} does not export required property '${propertyName}' from IMigrationScript interface`);
 			}
@@ -105,17 +85,9 @@ async function verifyMigrationImplementsInterface(
 			if (typeof migrationModule[propertyName] !== "function") {
 				throw new Error(`Migration ${fileName} exports '${propertyName}' but it's not a function (required by IMigrationScript interface)`);
 			}
-
-			(migrationObject as any)[propertyName] = migrationModule[propertyName];
 		}
 
-		const validatedMigration: IMigrationScript = migrationObject as IMigrationScript;
-
-		if (!validateMigrationObject(validatedMigration, fileName)) {
-			throw new Error(`Migration ${fileName} does not conform to IMigrationScript interface`);
-		}
-
-		logger.log(`${fileName} - implements IMigrationScript correctly (verified properties: ${interfaceRequirements.join(", ")})`);
+		logger.log(`${fileName} - implements IMigrationScript correctly (verified properties: ${REQUIRED_MIGRATION_PROPERTIES.join(", ")})`);
 	} catch (error) {
 		throw new Error(`Migration verification failed for ${fileName}: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -158,9 +130,7 @@ export function generateRegistryContent(files: string[]): string {
 
 			const migrationId = extractMigrationId(file);
 
-			const interfaceProperties = getInterfaceRequirements();
-
-			const propertyMappings = interfaceProperties.map(prop => `\t\t${prop}: migration${index}.${prop}`).join(",\n");
+			const propertyMappings = REQUIRED_MIGRATION_PROPERTIES.map(prop => `\t\t${prop}: migration${index}.${prop}`).join(",\n");
 
 			return `\t{
 		id: ${migrationId},
