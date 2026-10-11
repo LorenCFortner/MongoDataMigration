@@ -21,11 +21,13 @@ export class Logger implements ILogger {
 
 	public readonly logFile: string;
 
-	private readonly originalLog: (...args: any[]) => void;
+	private originalLog: (...args: any[]) => void;
 
-	private readonly originalError: (...args: any[]) => void;
+	private originalError: (...args: any[]) => void;
 
-	private readonly originalWarn: (...args: any[]) => void;
+	private originalWarn: (...args: any[]) => void;
+
+	private consoleOverridden = false;
 
 	constructor(@inject("IFileSystem") private fileSystem: IFileSystem) {
 		const isCompiledExecutable = (process as any).pkg !== undefined || (!process.execPath.includes("node") && process.execPath.endsWith(".exe"));
@@ -46,15 +48,24 @@ export class Logger implements ILogger {
 				? path.win32.join(this.logDir, "MongoDataMigration.log")
 				: path.join(this.logDir, "MongoDataMigration.log");
 
-		this.originalLog = console.log.bind(console);
+		// Node's console.log/error/warn work fine called standalone (no binding needed), and
+		// capturing the plain reference here — rather than a .bind() copy — means restoring
+		// console later (see restoreConsoleOverrides) puts back the exact same function
+		// reference that was there before, not a look-alike.
+		this.originalLog = console.log;
 
-		this.originalError = console.error.bind(console);
+		this.originalError = console.error;
 
-		this.originalWarn = console.warn.bind(console);
+		this.originalWarn = console.warn;
 
 		this.ensureLogDirectory();
 
-		this.setupConsoleOverrides();
+		// Note: global console.log/error/warn are deliberately NOT overridden here. Doing it
+		// as a side effect of construction meant merely creating a Logger (e.g. via DI in any
+		// test that resolves the container) silently hijacked console for the rest of the
+		// process, with no way to undo it — breaking isolation between tests. The override is
+		// now explicit: it starts with startSession() and is undone by endSession(), so its
+		// lifetime matches an actual logging session instead of the object's lifetime.
 	}
 
 	private static isWindowsStyleExecPath(execPath: string): boolean {
@@ -70,6 +81,18 @@ export class Logger implements ILogger {
 	}
 
 	private setupConsoleOverrides(): void {
+		if (this.consoleOverridden) {
+			return;
+		}
+
+		// Re-capture right before overriding, so restoreConsoleOverrides() puts back exactly
+		// what was installed at this moment, not just what was there at construction time.
+		this.originalLog = console.log;
+
+		this.originalError = console.error;
+
+		this.originalWarn = console.warn;
+
 		console.log = (...args: any[]) => {
 			this.writeToConsoleAndFile("LOG", this.originalLog, args);
 		};
@@ -81,6 +104,22 @@ export class Logger implements ILogger {
 		console.warn = (...args: any[]) => {
 			this.writeToConsoleAndFile("WARN", this.originalWarn, args);
 		};
+
+		this.consoleOverridden = true;
+	}
+
+	private restoreConsoleOverrides(): void {
+		if (!this.consoleOverridden) {
+			return;
+		}
+
+		console.log = this.originalLog;
+
+		console.error = this.originalError;
+
+		console.warn = this.originalWarn;
+
+		this.consoleOverridden = false;
 	}
 
 	private formatTimestamp(): string {
@@ -135,7 +174,10 @@ export class Logger implements ILogger {
 				return arg;
 
 			case arg instanceof Error:
-				return `${arg.name}: ${arg.message}`;
+				// .stack already starts with "name: message" followed by the frames, so this
+				// is a strict superset of the old name-and-message-only output — a failed
+				// migration's log entry now shows where it failed, not just that it did.
+				return arg.stack ?? `${arg.name}: ${arg.message}`;
 
 			case typeof arg === "object" && arg !== null:
 				try {
@@ -176,6 +218,8 @@ export class Logger implements ILogger {
 	}
 
 	startSession(sessionName: string = "Migration"): void {
+		this.setupConsoleOverrides();
+
 		const timestamp = this.formatTimestamp();
 
 		const startMessage = `\n${timestamp} [INF] === ${sessionName} started ===\n`;
@@ -193,5 +237,7 @@ export class Logger implements ILogger {
 		const endMessage = `${timestamp} [INF] === ${sessionName} completed ===\n\n`;
 
 		this.fileSystem.appendFileSync(this.logFile, endMessage);
+
+		this.restoreConsoleOverrides();
 	}
 }

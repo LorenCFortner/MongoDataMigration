@@ -107,6 +107,12 @@ describe("Logger", () => {
 	});
 
 	describe("console override behavior", () => {
+		beforeEach(() => {
+			logger.startSession("Test");
+
+			jest.clearAllMocks();
+		});
+
 		it("should call fileSystem.appendFileSync when console.log is used", () => {
 			console.log("TEST Information message");
 
@@ -126,39 +132,53 @@ describe("Logger", () => {
 		});
 	});
 
-	describe("console override verification", () => {
-		it("should override console.log after Logger instantiation", () => {
-			const beforeOverride = console.log;
+	describe("console override lifecycle", () => {
+		it("should NOT override console on construction alone", () => {
+			// Regression guard: merely resolving/constructing a Logger must not touch global
+			// console. Only an explicit startSession() call may do that (see below).
+			expect(console.log).toBe(originalConsoleLog);
 
-			const testLogger = container.resolve(Logger);
+			expect(console.error).toBe(originalConsoleError);
+
+			expect(console.warn).toBe(originalConsoleWarn);
+		});
+
+		it("should override console.log/error/warn once startSession() is called", () => {
+			logger.startSession("Test");
 
 			expect(console.log).not.toBe(originalConsoleLog);
 
-			console.log = beforeOverride;
-		});
-
-		it("should override console.error after Logger instantiation", () => {
-			const beforeOverride = console.error;
-
-			console.error = originalConsoleError;
-
-			const testLogger = container.resolve(Logger);
-
 			expect(console.error).not.toBe(originalConsoleError);
 
-			console.error = beforeOverride;
+			expect(console.warn).not.toBe(originalConsoleWarn);
 		});
 
-		it("should override console.warn after Logger instantiation", () => {
-			const beforeOverride = console.warn;
+		it("should restore the original console.log/error/warn when endSession() is called", () => {
+			logger.startSession("Test");
 
-			console.warn = originalConsoleWarn;
+			logger.endSession("Test");
 
-			const testLogger = container.resolve(Logger);
+			expect(console.log).toBe(originalConsoleLog);
 
-			expect(console.warn).not.toBe(originalConsoleWarn);
+			expect(console.error).toBe(originalConsoleError);
 
-			console.warn = beforeOverride;
+			expect(console.warn).toBe(originalConsoleWarn);
+		});
+
+		it("should not double-wrap console.log if startSession() is called twice", () => {
+			logger.startSession("Test");
+
+			const overriddenLog = console.log;
+
+			logger.startSession("Test");
+
+			expect(console.log).toBe(overriddenLog);
+		});
+
+		it("should not throw and should leave console alone if endSession() is called without a prior startSession()", () => {
+			expect(() => logger.endSession("Test")).not.toThrow();
+
+			expect(console.log).toBe(originalConsoleLog);
 		});
 	});
 
@@ -171,6 +191,24 @@ describe("Logger", () => {
 	describe("error method", () => {
 		it("should exist", () => {
 			expect(typeof logger.error).toBe("function");
+		});
+
+		it("should write the error's stack trace to the log file, not just name and message", () => {
+			const error = new Error("boom");
+
+			logger.error("Failed migration 1: test-migration", error);
+
+			expect(fileSystem.appendFileSync).toHaveBeenCalledWith(logger.logFile, expect.stringContaining(error.stack as string));
+		});
+
+		it("should fall back to name: message if the error has no stack", () => {
+			const error = new Error("boom");
+
+			delete (error as any).stack;
+
+			logger.error("Failed migration 1: test-migration", error);
+
+			expect(fileSystem.appendFileSync).toHaveBeenCalledWith(logger.logFile, expect.stringContaining("Error: boom"));
 		});
 	});
 
