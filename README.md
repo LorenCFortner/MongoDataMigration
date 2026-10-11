@@ -26,7 +26,9 @@ npm install
 ## Project Structure
 
 ```
-migrations/           # Migration files (e.g., 0001-addTestData.ts)
+migrations/           # Your real migration files go here (e.g., 0001-addSomething.ts)
+examples/
+  migrations/        # Fully-written example migrations to copy from — never run or scanned
 src/
   index.ts           # Application entry point
   Runner/            # Migration execution logic
@@ -36,6 +38,8 @@ src/
 scripts/
   GenerateRegistry/  # Auto-generates migration registry
 ```
+
+`migrations/` starts empty (a `.gitkeep` keeps the folder itself in git). It's scanned by the registry generator and executed for real against whatever database `MONGO_DB` points to — so nothing should live there except migrations you actually intend to run. `examples/migrations/` is outside that scan path on purpose: it holds complete, working example files (not just the inline snippets below) that you can read end-to-end or copy into `migrations/` as a starting point, without any risk of them running against a real database by accident.
 
 ## Writing Migrations
 
@@ -66,6 +70,8 @@ export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession
 Passing `{session}` costs nothing when there is no transaction (the driver just ignores `session: undefined`), but it's what lets the migration participate in a transaction when one exists. See [Transaction Safety & Idempotency](#transaction-safety--idempotency) below for why this matters.
 
 ### Migration Examples
+
+These are inline snippets. For complete, working files you can open and copy from directly, see [`examples/migrations/`](examples/migrations/) — they live outside `migrations/` on purpose, so they're never scanned or executed against a real database.
 
 **Example 1: Adding documents (idempotent via upsert)**
 
