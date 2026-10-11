@@ -69,8 +69,6 @@ export class Logger implements ILogger {
 	}
 
 	private static isWindowsStyleExecPath(execPath: string): boolean {
-		// Detect if execPath is in Windows format (e.g., contains backslashes or drive letter),
-		// so dirname/join use Windows semantics even when running on non-Windows (e.g., CI Linux).
 		return /[\\]/.test(execPath) || /^[A-Za-z]:\\/.test(execPath) || execPath.endsWith(".exe");
 	}
 

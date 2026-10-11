@@ -10,7 +10,6 @@ export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession
 
 	const collection = db.collection("CoolStuff");
 
-	// Get all documents in the collection
 	const documents = await collection.find({}, {session}).toArray();
 
 	console.log(`Found ${documents.length} documents to process`);
@@ -21,11 +20,10 @@ export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession
 
 	for (const doc of documents) {
 		if (doc.name && typeof doc.name === "string") {
-			// Extract number from the end of the name using regex
-			const match = doc.name.match(/(\d+)$/);
+			const trailingNumberMatch = doc.name.match(/(\d+)$/);
 
-			if (match) {
-				const numberFromName = parseInt(match[1], 10);
+			if (trailingNumberMatch) {
+				const numberFromName = parseInt(trailingNumberMatch[1], 10);
 
 				console.log(`Processing ${doc.name}, extracted number: ${numberFromName}`);
 

@@ -40,11 +40,7 @@ export class Mongo implements IMongo {
 	}
 
 	async getMongoDatabase(): Promise<Db> {
-		if (this.client) {
-			// A prior connection is still open — close it before opening another, so calling
-			// this twice can't leak a connection.
-			await this.client.close();
-		}
+		await this.closeExistingConnection();
 
 		this.client = new MongoClient(this.uri);
 
@@ -53,6 +49,12 @@ export class Mongo implements IMongo {
 		const db = this.client.db(this.databaseName);
 
 		return db;
+	}
+
+	private async closeExistingConnection(): Promise<void> {
+		if (this.client) {
+			await this.client.close();
+		}
 	}
 
 	startSession(): ClientSession {
