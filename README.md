@@ -115,12 +115,18 @@ export const up: IMigrationScript["up"] = async (db: Db, session?: ClientSession
 
 ## Configuration
 
-The MongoDB connection is configured via the `Mongo` class in `src/Mongo/Mongo.ts`. Update the connection string and database name as needed:
+The MongoDB connection is configured via environment variables, read in `src/Mongo/Mongo.ts`:
 
-```typescript
-const uri = "mongodb://localhost:27017";
-const dbName = "your-database-name";
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `MONGO_DB` | **Yes** | _(none)_ | The target database name. There is no default — if it's unset or empty, the tool throws immediately on startup instead of silently running against a placeholder database. |
+| `MONGO_URI` | No | `mongodb://localhost:27017` | The MongoDB connection string. |
+
+```bash
+MONGO_DB=your-database-name MONGO_URI=mongodb://your-host:27017 npm start
 ```
+
+`MONGO_URI` is allowed to default to a local server because that's a reasonable thing to assume during development. `MONGO_DB` is not: a migration that quietly ran against the wrong database would report success and record itself as applied, with nothing to indicate it touched the wrong place — so it has no default at all.
 
 ## Usage
 

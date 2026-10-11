@@ -13,15 +13,39 @@ export interface IMongo {
 
 @injectable()
 export class Mongo implements IMongo {
-	constructor() {}
+	public readonly uri: string;
 
-	public readonly uri = process.env.MONGO_URI || "mongodb://localhost:27017";
-
-	public readonly databaseName = process.env.MONGO_DB || "TestMigrateMongo";
+	public readonly databaseName: string;
 
 	private client: MongoClient | undefined;
 
+	constructor() {
+		this.uri = process.env.MONGO_URI || "mongodb://localhost:27017";
+
+		const databaseName = process.env.MONGO_DB;
+
+		if (!databaseName) {
+			// No default here on purpose: a missing MONGO_DB used to fall back to a throwaway
+			// "TestMigrateMongo" database. Migrations would then run successfully, report
+			// success, and record themselves as applied — against the wrong database, with
+			// nothing to indicate that happened. Failing immediately is much cheaper than that.
+			throw new Error(
+				"MONGO_DB environment variable is not set. Set it to the target database name before " +
+					"running migrations — there is no default, so a missing config can't silently run " +
+					"against the wrong database."
+			);
+		}
+
+		this.databaseName = databaseName;
+	}
+
 	async getMongoDatabase(): Promise<Db> {
+		if (this.client) {
+			// A prior connection is still open — close it before opening another, so calling
+			// this twice can't leak a connection.
+			await this.client.close();
+		}
+
 		this.client = new MongoClient(this.uri);
 
 		await this.client.connect();

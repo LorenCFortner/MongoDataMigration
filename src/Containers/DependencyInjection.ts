@@ -8,7 +8,7 @@ import {Logger, ILogger} from "../Logger/Logger";
 container.registerSingleton<ILogger>("ILogger", Logger);
 
 container.register<IFileSystem>("IFileSystem", {
-	useClass: FileSystem,
+	useValue: FileSystem,
 });
 
 container.register<IRunner>("IRunner", {
