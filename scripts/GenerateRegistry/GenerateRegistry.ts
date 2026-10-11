@@ -13,8 +13,6 @@ const registryPath = path.join(__dirname, "..", "..", "MigrationRegistryAuto.ts"
 const logger = container.resolve<ILogger>("ILogger");
 const fileSystem = container.resolve<IFileSystem>("IFileSystem");
 
-logger.startSession("GenerateRegistry");
-
 // IMigrationScript currently has a single required member. This is the actual list the
 // generator checks against — there's no way to derive "what properties does an interface
 // require" from TypeScript at runtime, so this has to be kept in sync by hand if
@@ -179,9 +177,7 @@ export async function generateRegistry(
 
 		logger.error(error instanceof Error ? error.message : String(error));
 
-		process.exit(1);
-
-		return;
+		throw error;
 	}
 
 	try {
@@ -191,9 +187,7 @@ export async function generateRegistry(
 
 		logger.error(error instanceof Error ? error.message : String(error));
 
-		process.exit(1);
-
-		return;
+		throw error;
 	}
 
 	const registryContent = generateRegistryContent(files);
@@ -205,9 +199,18 @@ export async function generateRegistry(
 	logger.endSession("GenerateRegistry");
 }
 
-generateRegistry().catch(error => {
-	logger.error("Failed to generate migration registry:", error instanceof Error ? error.message : String(error));
+// Only run as a CLI entry point (`node GenerateRegistry.js` / `ts-node GenerateRegistry.ts`),
+// never just from being imported — e.g. by GenerateRegistry.specs.ts, or by anything else
+// that imports the exported functions above. Without this guard, importing this file for
+// its exports triggers a real registry generation (and a real process.exit(1) on failure)
+// as a side effect of the import itself.
+if (require.main === module) {
+	logger.startSession("GenerateRegistry");
 
-	logger.endSession("GenerateRegistry");
-	process.exit(1);
-});
+	generateRegistry().catch(error => {
+		logger.error("Failed to generate migration registry:", error instanceof Error ? error.message : String(error));
+
+		logger.endSession("GenerateRegistry");
+		process.exit(1);
+	});
+}

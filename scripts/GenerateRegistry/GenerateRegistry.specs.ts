@@ -24,6 +24,18 @@ import {container} from "tsyringe";
 import path from "path";
 
 describe("GenerateRegistry", () => {
+	describe("module entry point guard", () => {
+		it("is not the Node.js entry point when loaded by Jest", () => {
+			// GenerateRegistry.ts only auto-runs generateRegistry() (and only calls
+			// process.exit) when `require.main === module` — i.e. when the file is executed
+			// directly, not merely imported. Under Jest this file is always imported, so
+			// require.main is Jest's own runner, never this module. That's what keeps every
+			// test above from triggering a real registry generation (or a real process exit)
+			// just by importing GenerateRegistry.ts at the top of this file.
+			expect(require.main).not.toBe(module);
+		});
+	});
+
 	describe("extractMigrationId", () => {
 		it("should extract migration ID from valid filename", () => {
 			const result = extractMigrationId("1-addTestData.ts");
@@ -526,7 +538,7 @@ describe("GenerateRegistry", () => {
 			expect(mockVerifyFunction).toHaveBeenCalled();
 		});
 
-		it("should fail with duplicate migration IDs and never reach verification or write", async () => {
+		it("should throw (not call process.exit) with duplicate migration IDs, and never reach verification or write", async () => {
 			const mockProcessExit = jest.spyOn(process, "exit").mockImplementation(() => {
 				throw new Error("process.exit called");
 			});
@@ -536,21 +548,21 @@ describe("GenerateRegistry", () => {
 			(mockFileSystem.readdirSync as jest.Mock).mockReturnValue(["0002-a.ts", "2-b.ts"]);
 
 			await expect(generateRegistry("/test/migrations", "/test/output.ts", mockFileSystem, mockVerifyFunction, mockImportFunction)).rejects.toThrow(
-				"process.exit called"
+				/Duplicate migration IDs found/
 			);
 
 			expect(mockLogger.error).toHaveBeenCalledWith("Migration generation failed!");
 
 			expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining("ID 2: 0002-a.ts, 2-b.ts"));
 
-			expect(mockProcessExit).toHaveBeenCalledWith(1);
+			expect(mockProcessExit).not.toHaveBeenCalled();
 
 			expect(mockVerifyFunction).not.toHaveBeenCalled();
 
 			expect(mockFileSystem.writeFileSync).not.toHaveBeenCalled();
 		});
 
-		it("should handle verification errors properly", async () => {
+		it("should throw (not call process.exit) when verification fails", async () => {
 			const mockProcessExit = jest.spyOn(process, "exit").mockImplementation(() => {
 				throw new Error("process.exit called");
 			});
@@ -562,14 +574,14 @@ describe("GenerateRegistry", () => {
 			mockVerifyFunction.mockRejectedValue(new Error("Migration verification failed"));
 
 			await expect(generateRegistry("/test/migrations", "/test/output.ts", mockFileSystem, mockVerifyFunction, mockImportFunction)).rejects.toThrow(
-				"process.exit called"
+				"Migration verification failed"
 			);
 
 			expect(mockLogger.error).toHaveBeenCalledWith("Migration verification failed!");
 
 			expect(mockLogger.error).toHaveBeenCalledWith("Migration verification failed");
 
-			expect(mockProcessExit).toHaveBeenCalledWith(1);
+			expect(mockProcessExit).not.toHaveBeenCalled();
 
 			expect(mockFileSystem.writeFileSync).not.toHaveBeenCalled();
 		});
