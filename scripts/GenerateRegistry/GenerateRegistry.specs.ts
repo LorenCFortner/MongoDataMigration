@@ -425,6 +425,28 @@ describe("GenerateRegistry", () => {
 
 			expect(result).toContain("].sort((a, b) => a.id - b.id);");
 		});
+
+		it("should escape a quote in the filename instead of breaking the generated source", () => {
+			// path.basename(file, ".ts") strips the extension but leaves the rest of the
+			// name — including a literal `"` — untouched, so the filename is what has to be
+			// escaped on the way out, not assumed safe to drop into a template string as-is.
+			// (No `/` or `\` here: those are illegal in a real filename on every OS and would
+			// just be consumed as path separators by path.basename, never reaching this code.)
+			const dangerousName = '1-add"malicious';
+
+			const result = generateRegistryContent([`${dangerousName}.ts`]);
+
+			// Correctly escaped: JSON.stringify's own quoting/escaping of the name appears
+			// verbatim in the output, for both the registry entry and the import specifier.
+			expect(result).toContain(`name: ${JSON.stringify(dangerousName)},`);
+
+			expect(result).toContain(`from ${JSON.stringify(`./migrations/${dangerousName}`)};`);
+
+			// Not escaped (the old, buggy behavior): the raw filename sitting inside a
+			// template string's own `"..."` quotes, which would have terminated that string
+			// literal early and left the rest sitting outside any string.
+			expect(result).not.toContain(`name: "${dangerousName}",`);
+		});
 	});
 
 	describe("generateRegistry", () => {

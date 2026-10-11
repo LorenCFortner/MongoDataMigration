@@ -118,7 +118,9 @@ export function generateRegistryContent(files: string[]): string {
 		.map((file, index) => {
 			const baseName = path.basename(file, ".ts");
 
-			return `import * as migration${index} from "./migrations/${baseName}";`;
+			// JSON.stringify produces a properly escaped string literal (quotes, backslashes,
+			// etc.), unlike interpolating the raw filename straight into a template string.
+			return `import * as migration${index} from ${JSON.stringify(`./migrations/${baseName}`)};`;
 		})
 		.join("\n");
 
@@ -132,7 +134,7 @@ export function generateRegistryContent(files: string[]): string {
 
 			return `\t{
 		id: ${migrationId},
-		name: "${baseName}",
+		name: ${JSON.stringify(baseName)},
 ${propertyMappings}
 	}`;
 		})
