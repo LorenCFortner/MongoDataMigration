@@ -486,6 +486,36 @@ describe("GenerateRegistry", () => {
 			expect(mockVerifyFunction).not.toHaveBeenCalled();
 		});
 
+		it("should still call endSession on the empty-migrations early return, not just on success", async () => {
+			// Regression guard: an early return that skips endSession() leaves the log
+			// session unclosed and (per Logger's design) the hijacked console.log/error/warn
+			// never restored. This is the exact path a fresh clone hits by default, since
+			// migrations/ ships empty.
+			const mockImportFunction = jest.fn();
+
+			(mockFileSystem.readdirSync as jest.Mock).mockReturnValue([]);
+
+			await generateRegistry("/test/migrations", "/test/output.ts", mockFileSystem, mockVerifyFunction, mockImportFunction);
+
+			expect(mockLogger.endSession).toHaveBeenCalledWith("GenerateRegistry");
+		});
+
+		it("should call endSession exactly once even when generation fails", async () => {
+			const mockImportFunction = jest.fn();
+
+			(mockFileSystem.readdirSync as jest.Mock).mockReturnValue(["1-test.ts"]);
+
+			mockVerifyFunction.mockRejectedValue(new Error("boom"));
+
+			await expect(generateRegistry("/test/migrations", "/test/output.ts", mockFileSystem, mockVerifyFunction, mockImportFunction)).rejects.toThrow(
+				"boom"
+			);
+
+			expect(mockLogger.endSession).toHaveBeenCalledTimes(1);
+
+			expect(mockLogger.endSession).toHaveBeenCalledWith("GenerateRegistry");
+		});
+
 		it("should filter non-TypeScript files", async () => {
 			const mockImportFunction = jest.fn();
 

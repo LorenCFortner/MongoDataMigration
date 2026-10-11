@@ -213,8 +213,6 @@ The lock is released (the document is deleted) as soon as the run finishes, whet
 
 ## Transaction Safety & Idempotency
 
-## Transaction Safety & Idempotency
-
 Before running any migrations, the tool checks whether the MongoDB connection supports transactions — that is, whether it's talking to a **replica set** or a **sharded cluster (mongos)**, including **MongoDB Atlas**, which is always a replica set. A standalone `mongod` does not support transactions at all.
 
 **If transactions are supported:** each migration's `up()` runs inside a MongoDB session transaction, along with the write that records it as applied. If the migration throws partway through — a network blip, a bad document, anything — the entire transaction is rolled back automatically. Nothing it wrote is kept, the "applied" record is never created, and the database is left exactly as it was before the migration started. You can simply fix the problem and run the tool again.

@@ -164,41 +164,47 @@ export async function generateRegistry(
 	verifyFunction: typeof verifyAllMigrations = verifyAllMigrations,
 	importFunction: (path: string) => Promise<any> = path => import(path)
 ): Promise<void> {
-	const files = (fileSystemModule.readdirSync(migrationsDirectory, {withFileTypes: false}) as string[]).filter(f => /\.ts$/.test(f)).sort();
-
-	if (files.length === 0) {
-		logger.log("No migration files found.");
-
-		return;
-	}
-
+	// Everything below is wrapped so endSession() always runs exactly once — on the
+	// empty-migrations early return, on a thrown error, or on success — not just on the
+	// success path. Logger ties restoring the hijacked console.log/error/warn to
+	// endSession(), so skipping it on any path leaves console overridden indefinitely.
 	try {
-		assertNoDuplicateMigrationIds(files);
-	} catch (error) {
-		logger.error("Migration generation failed!");
+		const files = (fileSystemModule.readdirSync(migrationsDirectory, {withFileTypes: false}) as string[]).filter(f => /\.ts$/.test(f)).sort();
 
-		logger.error(error instanceof Error ? error.message : String(error));
+		if (files.length === 0) {
+			logger.log("No migration files found.");
 
-		throw error;
+			return;
+		}
+
+		try {
+			assertNoDuplicateMigrationIds(files);
+		} catch (error) {
+			logger.error("Migration generation failed!");
+
+			logger.error(error instanceof Error ? error.message : String(error));
+
+			throw error;
+		}
+
+		try {
+			await verifyFunction(files, migrationsDirectory, importFunction);
+		} catch (error) {
+			logger.error("Migration verification failed!");
+
+			logger.error(error instanceof Error ? error.message : String(error));
+
+			throw error;
+		}
+
+		const registryContent = generateRegistryContent(files);
+
+		fileSystemModule.writeFileSync(outputPath, registryContent);
+
+		logger.log(`Generated ${outputPath} with ${files.length} migrations.`);
+	} finally {
+		logger.endSession("GenerateRegistry");
 	}
-
-	try {
-		await verifyFunction(files, migrationsDirectory, importFunction);
-	} catch (error) {
-		logger.error("Migration verification failed!");
-
-		logger.error(error instanceof Error ? error.message : String(error));
-
-		throw error;
-	}
-
-	const registryContent = generateRegistryContent(files);
-
-	fileSystemModule.writeFileSync(outputPath, registryContent);
-
-	logger.log(`Generated ${outputPath} with ${files.length} migrations.`);
-
-	logger.endSession("GenerateRegistry");
 }
 
 // Only run as a CLI entry point (`node GenerateRegistry.js` / `ts-node GenerateRegistry.ts`),
@@ -210,9 +216,10 @@ if (require.main === module) {
 	logger.startSession("GenerateRegistry");
 
 	generateRegistry().catch(error => {
+		// generateRegistry() already called endSession() itself (in its own finally) before
+		// this rejection reached here — don't call it a second time.
 		logger.error("Failed to generate migration registry:", error instanceof Error ? error.message : String(error));
 
-		logger.endSession("GenerateRegistry");
 		process.exit(1);
 	});
 }
