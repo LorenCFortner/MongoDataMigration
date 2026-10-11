@@ -225,11 +225,13 @@ For this to actually work, **every database call inside your migration must be p
 
 ## Migration Tracking
 
-The system tracks applied migrations in a special `_migrations` collection in your database. This collection stores:
+The system tracks applied migrations in a special `_migrations` collection in your database. That collection holds exactly one document, under a fixed `_id` so it can be looked up and upserted by a real filter instead of relying on "there's only ever one row in here":
 
 ```javascript
 {
-	lastMigrationId: 13; // The ID of the most recently applied migration
+	_id: "appliedMigrations",
+	migrationId: 13, // The ID of the most recently applied migration
+	lastApplied: ISODate("2024-01-01T00:00:00.000Z"),
 }
 ```
 

@@ -1,13 +1,20 @@
 import {injectable, inject} from "tsyringe";
 import {ILogger} from "../Logger/Logger";
-import {migrationRegistry, migrationCount, Migration} from "../../MigrationRegistryAuto";
+import {migrationRegistry, Migration} from "../../MigrationRegistryAuto";
 import {IMongo} from "../Mongo/Mongo";
 import {Collection, Db, Document} from "mongodb";
 
 export interface MigrationDocument extends Document {
+	_id: "appliedMigrations";
 	migrationId: number;
 	lastApplied: Date;
 }
+
+// _migrations stores one well-known document tracking the highest applied migration ID —
+// not one row per migration (see README's "Migration Tracking" section for why). Filtering
+// and upserting by this fixed _id (rather than findOne()/replaceOne({}, ...) with no
+// filter) makes that "exactly one row, this one" contract explicit instead of implicit.
+const APPLIED_MIGRATIONS_DOCUMENT_ID = "appliedMigrations";
 
 export interface LockDocument extends Document {
 	_id: "lock";
@@ -25,11 +32,11 @@ const LOCK_DUPLICATE_KEY_ERROR_CODE = 11000;
 export class Runner implements IRunner {
 	constructor(@inject("ILogger") private readonly logger: ILogger, @inject("IMongo") private readonly mongo: IMongo) {}
 
-	public mongoDb: Db | undefined;
+	private mongoDb: Db | undefined;
 
-	public appliedCollection: Collection<Document> | undefined;
+	private appliedCollection: Collection<MigrationDocument> | undefined;
 
-	public lockCollection: Collection<LockDocument> | undefined;
+	private lockCollection: Collection<LockDocument> | undefined;
 
 	private lockAcquired = false;
 
@@ -56,7 +63,7 @@ export class Runner implements IRunner {
 
 		this.mongoDb = await this.mongo.getMongoDatabase();
 
-		this.appliedCollection = this.mongoDb.collection("_migrations");
+		this.appliedCollection = this.mongoDb.collection<MigrationDocument>("_migrations");
 
 		this.lockCollection = this.mongoDb.collection<LockDocument>("_migrations_lock");
 
@@ -114,14 +121,44 @@ export class Runner implements IRunner {
 		return typeof error === "object" && error !== null && (error as {code?: number}).code === LOCK_DUPLICATE_KEY_ERROR_CODE;
 	}
 
+	private async getLastMigrationId(): Promise<number> {
+		const current = await this.appliedCollection!.findOne({_id: APPLIED_MIGRATIONS_DOCUMENT_ID});
+
+		if (current) {
+			return current.migrationId;
+		}
+
+		// Back-compat: before this fix, the tracking document had no fixed _id — just
+		// whatever MongoDB assigned on the first upsert (findOne()/replaceOne({}, ...) with
+		// no filter, relying on there only ever being one document). Fall back to finding
+		// it by shape instead of treating "not found by the new _id" as "nothing applied
+		// yet", then migrate it onto the fixed _id so this fallback only runs once per
+		// database.
+		const legacy = await this.appliedCollection!.findOne({migrationId: {$exists: true}});
+
+		if (!legacy) {
+			return 0;
+		}
+
+		await this.appliedCollection!.replaceOne(
+			{_id: APPLIED_MIGRATIONS_DOCUMENT_ID},
+			{_id: APPLIED_MIGRATIONS_DOCUMENT_ID, migrationId: legacy.migrationId, lastApplied: legacy.lastApplied},
+			{upsert: true}
+		);
+
+		await this.appliedCollection!.deleteOne({_id: legacy._id});
+
+		this.logger.log(`Migrated legacy _migrations tracking document (migrationId: ${legacy.migrationId}) onto a fixed _id.`);
+
+		return legacy.migrationId;
+	}
+
 	private async runMigrations(): Promise<void> {
 		if (!this.mongoDb || !this.appliedCollection) {
 			throw new Error("MongoDB is not set up. Cannot run migrations.");
 		}
 
-		const lastMigration = await this.appliedCollection.findOne<MigrationDocument>();
-
-		const lastMigrationId = lastMigration ? lastMigration.migrationId : 0;
+		const lastMigrationId = await this.getLastMigrationId();
 
 		this.logger.log(`Last applied migration ID: ${lastMigrationId}`);
 
@@ -160,8 +197,8 @@ export class Runner implements IRunner {
 				await migration.up(this.mongoDb!, session);
 
 				await this.appliedCollection!.replaceOne(
-					{},
-					{migrationId: migration.id, lastApplied: new Date()},
+					{_id: APPLIED_MIGRATIONS_DOCUMENT_ID},
+					{_id: APPLIED_MIGRATIONS_DOCUMENT_ID, migrationId: migration.id, lastApplied: new Date()},
 					{upsert: true, session}
 				);
 			});
@@ -180,7 +217,11 @@ export class Runner implements IRunner {
 		try {
 			await migration.up(this.mongoDb!);
 
-			await this.appliedCollection!.replaceOne({}, {migrationId: migration.id, lastApplied: new Date()}, {upsert: true});
+			await this.appliedCollection!.replaceOne(
+				{_id: APPLIED_MIGRATIONS_DOCUMENT_ID},
+				{_id: APPLIED_MIGRATIONS_DOCUMENT_ID, migrationId: migration.id, lastApplied: new Date()},
+				{upsert: true}
+			);
 
 			this.logger.log(`Completed migration ${migration.id}: ${migration.name}`);
 		} catch (error) {

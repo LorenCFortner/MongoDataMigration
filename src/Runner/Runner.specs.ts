@@ -20,6 +20,7 @@ describe("Runner", () => {
 
 	let mockFindOne: jest.Mock;
 	let mockReplaceOne: jest.Mock;
+	let mockDeleteOne: jest.Mock;
 	let mockCollection: any;
 	let mockLockInsertOne: jest.Mock;
 	let mockLockDeleteOne: jest.Mock;
@@ -36,9 +37,11 @@ describe("Runner", () => {
 	const setupMongoMocks = (findOneReturnValue: any = null) => {
 		mockFindOne = jest.fn().mockResolvedValue(findOneReturnValue);
 		mockReplaceOne = jest.fn();
+		mockDeleteOne = jest.fn().mockResolvedValue(undefined);
 		mockCollection = {
 			findOne: mockFindOne,
 			replaceOne: mockReplaceOne,
+			deleteOne: mockDeleteOne,
 		};
 
 		mockLockInsertOne = jest.fn().mockResolvedValue(undefined);
@@ -115,11 +118,14 @@ describe("Runner", () => {
 		});
 
 		it("sets appliedCollection to the _migrations collection", async () => {
+			// appliedCollection is a private field; (runner as any) reaches it for this one
+			// assertion. TS privacy is compile-time only, so this is safe and doesn't need
+			// the field to be public just for a test to inspect it.
 			const originalTeardown = (runner as any).teardownMongo;
 			const teardownSpy = jest.spyOn(runner as any, "teardownMongo").mockImplementation(async () => {
-				expect(runner.appliedCollection).toBeDefined();
+				expect((runner as any).appliedCollection).toBeDefined();
 
-				expect(runner.appliedCollection).toBe(mockCollection);
+				expect((runner as any).appliedCollection).toBe(mockCollection);
 
 				expect(mockDb.collection).toHaveBeenCalledWith("_migrations");
 
@@ -135,9 +141,15 @@ describe("Runner", () => {
 		});
 
 		it("calls appliedCollection.findOne when runMigrations is implemented", async () => {
+			// A document already exists under the fixed _id, so getLastMigrationId()
+			// resolves on the first lookup without needing the legacy-shape fallback.
+			mockLastMigrationId(0);
+
 			await runner.execute();
 
 			expect(mockFindOne).toHaveBeenCalledTimes(1);
+
+			expect(mockFindOne).toHaveBeenCalledWith({_id: "appliedMigrations"});
 		});
 
 		it("logs migration ID as zero when no migrations have been applied", async () => {
@@ -166,7 +178,7 @@ describe("Runner", () => {
 			it("sets lockCollection to the _migrations_lock collection", async () => {
 				const originalTeardown = (runner as any).teardownMongo;
 				const teardownSpy = jest.spyOn(runner as any, "teardownMongo").mockImplementation(async () => {
-					expect(runner.lockCollection).toBe(mockLockCollection);
+					expect((runner as any).lockCollection).toBe(mockLockCollection);
 
 					await originalTeardown.call(runner);
 				});
@@ -199,7 +211,7 @@ describe("Runner", () => {
 			it("sets lockCollection to undefined after teardown", async () => {
 				await runner.execute();
 
-				expect(runner.lockCollection).toBeUndefined();
+				expect((runner as any).lockCollection).toBeUndefined();
 			});
 
 			it("refuses to run migrations and does not release the lock when another run already holds it", async () => {
@@ -226,6 +238,66 @@ describe("Runner", () => {
 				await expect(runner.execute()).rejects.toThrow("connection reset");
 
 				expect(mockLockDeleteOne).not.toHaveBeenCalled();
+			});
+		});
+
+		describe("legacy _migrations document migration", () => {
+			it("falls back to a shape-based lookup when no document exists under the fixed _id, and uses its value", async () => {
+				const legacyId = "some-mongo-assigned-objectid";
+				const legacyLastApplied = new Date("2024-01-01T00:00:00.000Z");
+
+				mockFindOne.mockResolvedValueOnce(null).mockResolvedValueOnce({_id: legacyId, migrationId: 13, lastApplied: legacyLastApplied});
+
+				await runner.execute();
+
+				expect(mockFindOne).toHaveBeenNthCalledWith(1, {_id: "appliedMigrations"});
+
+				expect(mockFindOne).toHaveBeenNthCalledWith(2, {migrationId: {$exists: true}});
+
+				expect(logger.log).toHaveBeenCalledWith("Last applied migration ID: 13");
+			});
+
+			it("rewrites the legacy document onto the fixed _id and deletes the old one", async () => {
+				const legacyId = "some-mongo-assigned-objectid";
+				const legacyLastApplied = new Date("2024-01-01T00:00:00.000Z");
+
+				mockFindOne.mockResolvedValueOnce(null).mockResolvedValueOnce({_id: legacyId, migrationId: 13, lastApplied: legacyLastApplied});
+
+				await runner.execute();
+
+				expect(mockReplaceOne).toHaveBeenCalledWith(
+					{_id: "appliedMigrations"},
+					{_id: "appliedMigrations", migrationId: 13, lastApplied: legacyLastApplied},
+					{upsert: true}
+				);
+
+				expect(mockDeleteOne).toHaveBeenCalledWith({_id: legacyId});
+			});
+
+			it("does not treat a genuinely fresh database (no document at all) as a legacy document", async () => {
+				// mockFindOne already defaults to resolving null for every call (fresh DB,
+				// neither the fixed-_id lookup nor the legacy-shape fallback finds anything).
+				await runner.execute();
+
+				expect(logger.log).toHaveBeenCalledWith("Last applied migration ID: 0");
+
+				// No legacy document means nothing to migrate or clean up — the only
+				// replaceOne calls below should be the normal per-migration completion
+				// writes (all migrations are pending since lastMigrationId is 0), not an
+				// extra legacy-migration write.
+				expect(mockReplaceOne).toHaveBeenCalledTimes(3);
+
+				expect(mockDeleteOne).not.toHaveBeenCalled();
+			});
+
+			it("does not call the legacy fallback at all once a document exists under the fixed _id", async () => {
+				mockLastMigrationId(13);
+
+				await runner.execute();
+
+				expect(mockFindOne).toHaveBeenCalledTimes(1);
+
+				expect(mockDeleteOne).not.toHaveBeenCalled();
 			});
 		});
 
@@ -284,7 +356,11 @@ describe("Runner", () => {
 				for (const migration of mockMigrationRegistry.migrationRegistry) {
 					expect(migration.up).toHaveBeenCalledTimes(1);
 
-					expect(mockReplaceOne).toHaveBeenCalledWith({}, {migrationId: migration.id, lastApplied: expect.any(Date)}, {upsert: true});
+					expect(mockReplaceOne).toHaveBeenCalledWith(
+						{_id: "appliedMigrations"},
+						{_id: "appliedMigrations", migrationId: migration.id, lastApplied: expect.any(Date)},
+						{upsert: true}
+					);
 				}
 			});
 
@@ -360,8 +436,8 @@ describe("Runner", () => {
 
 				for (const migration of mockMigrationRegistry.migrationRegistry) {
 					expect(mockReplaceOne).toHaveBeenCalledWith(
-						{},
-						{migrationId: migration.id, lastApplied: expect.any(Date)},
+						{_id: "appliedMigrations"},
+						{_id: "appliedMigrations", migrationId: migration.id, lastApplied: expect.any(Date)},
 						{upsert: true, session: mockSession}
 					);
 				}
@@ -394,9 +470,9 @@ describe("Runner", () => {
 		it("sets mongoDb and appliedCollection to undefined after mongo.closeMongoDatabase has been called", async () => {
 			await runner.execute();
 
-			expect(runner.mongoDb).toBeUndefined();
+			expect((runner as any).mongoDb).toBeUndefined();
 
-			expect(runner.appliedCollection).toBeUndefined();
+			expect((runner as any).appliedCollection).toBeUndefined();
 		});
 
 		it("on an exception being thrown still calls mongo closeMongoDatabase", async () => {
