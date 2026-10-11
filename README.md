@@ -49,7 +49,7 @@ Migrations are TypeScript files placed in the `migrations/` directory. They must
 XXXX-description.ts
 ```
 
-Where `XXXX` is a zero-padded numeric ID (e.g., `0001`, `0002`, `0013`).
+Where `XXXX` is a numeric ID — zero-padding (`0001`, `0002`, `0013`) is the convention this repo follows for readable sort order, but it isn't required; `1-description.ts` works identically to `0001-description.ts`.
 
 ### Migration Template
 
@@ -256,7 +256,7 @@ This is intentionally a **single number, not a list**. The tool only ever asks "
 
 ## Logs
 
-Logs are written to the `logs/` directory with timestamped filenames. Each session creates a new log file containing all console output.
+Logs are written to `Logs/MongoDataMigration.log`, next to wherever the tool is run from (or next to the `.exe`, when running the compiled executable — see `Logger.ts`'s path detection). It's a single accumulating file, not one per run: each session appends a `=== ... started ===` / `=== ... completed ===` pair around that run's output rather than creating a new timestamped file.
 
 ## Best Practices
 
@@ -277,4 +277,8 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 - **mongodb**: MongoDB driver for Node.js
 - **tsyringe**: Dependency injection container
 - **reflect-metadata**: Required for tsyringe decorators
-- **natural-orderby**: Natural sorting of migration files
+
+Build-time only (not shipped in the `.exe`, used to build it):
+
+- **esbuild**: Bundles the app into a single file for `build:exe`
+- **postject**: Injects that bundle into a copy of the `node` binary to produce the `.exe` (Node's Single Executable Applications feature — see [Building](#building))
