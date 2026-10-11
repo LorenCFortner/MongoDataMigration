@@ -6,12 +6,12 @@
 	"bin": "build/src/index.js",
 	"type": "commonjs",
 	"scripts": {
-		"clean:migrations": "pwsh -Command \"if (Test-Path 'build/migrations') { Remove-Item 'build/migrations' -Recurse -Force }\"",
+		"clean:migrations": "node -e \"require('fs').rmSync('build/migrations', {recursive: true, force: true})\"",
 		"pregenerate:registry": "node scripts/CreateMigrationStub.js",
 		"generate:registry": "node --no-deprecation node_modules/ts-node/dist/bin.js scripts/GenerateRegistry/GenerateRegistry.ts",
 		"build:ts": "npm run clean:migrations && npm run generate:registry && tsc",
 		"build:exe": "npm run build:ts && node scripts/BuildExe.js",
-		"prestart": "yarn generate:registry",
+		"prestart": "npm run generate:registry",
 		"start": "ts-node src/index.ts",
 		"pretest": "node scripts/CreateMigrationStub.js && npm run generate:registry",
 		"test": "jest",
@@ -21,7 +21,6 @@
 	},
 	"dependencies": {
 		"mongodb": "^4.17.2",
-		"natural-orderby": "^5.0.0",
 		"reflect-metadata": "^0.2.2",
 		"tsyringe": "^4.10.0"
 	},
